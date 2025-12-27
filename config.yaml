@@ -1,0 +1,40 @@
+# If you set SEED in GitHub Actions, "${SEED}" will resolve correctly now.
+seed: "${SEED}"
+
+width: 640
+height: 480        # VHS 4:3
+fps: 15
+
+slide_seconds: 3.2
+
+# Web scrape toggle
+web: true
+scrape_images_count: 10
+
+# 3 flash events max, each ~0.5s
+popup_flashes_max: 3
+popup_flash_seconds: 0.5
+
+# "Vibe" tag included in footer + metadata
+vibe: "vhs_found_training"
+
+# Choose words to inject into the deck (ARG flavor)
+inject_words:
+  - "mnemonic"
+  - "anchor"
+  - "compliance"
+  - "jane doe"
+
+# Words to encrypt as easter eggs
+encrypt_words:
+  - "remember"
+  - "do not describe"
+encrypt_shift: 9
+
+toggles:
+  vhs: true
+  glitch: true
+  redactions: true
+  timecode: true
+  ppt90s: true
+  faces: true
