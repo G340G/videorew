@@ -1,0 +1,59 @@
+name: Generate Horror PPT VHS Video
+
+on:
+  workflow_dispatch:
+    inputs:
+      seed:
+        description: "Seed (int or string). Leave empty for random."
+        required: false
+        default: ""
+  push:
+    paths:
+      - "generate.py"
+      - "config.yaml"
+      - "requirements.txt"
+      - ".github/workflows/generate.yml"
+      - "assets/**"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install system deps (ffmpeg + espeak)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg espeak
+
+      - name: Install Python deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Decide seed
+        run: |
+          if [ -n "${{ inputs.seed }}" ]; then
+            echo "SEED=${{ inputs.seed }}" >> $GITHUB_ENV
+          else
+            # randomized per run
+            echo "SEED=$RANDOM$RANDOM" >> $GITHUB_ENV
+          fi
+
+      - name: Generate video
+        run: |
+          python generate.py --config config.yaml --out out.mp4
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pptex_video
+          path: |
+            out.mp4
+            meta.json
