@@ -37,7 +37,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import requests
 import yaml
-import imageio.v2 as imageio  # Moved to top level for early error detection
+import imageio.v2 as imageio
 from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps
 from scipy.io.wavfile import read as wav_read
 from scipy.io.wavfile import write as wav_write
@@ -91,11 +91,9 @@ def parse_int_safe(x: Any, default: int) -> int:
         s = x.strip()
         if s == "" or s.lower() in ("auto", "random", "none", "null"):
             return default
-        # allow numeric strings like "1337"
         try:
             return int(s)
         except ValueError:
-            # last attempt: extract digits
             digits = re.findall(r"-?\d+", s)
             if digits:
                 try:
@@ -106,7 +104,6 @@ def parse_int_safe(x: Any, default: int) -> int:
 
 
 def now_seed() -> int:
-    # time-based seed that's stable per run
     return int(time.time() * 1000) % 2_147_483_647
 
 
@@ -115,6 +112,15 @@ def load_yaml(path: str) -> Dict[str, Any]:
         return {}
     with open(path, "r", encoding="utf-8") as f:
         cfg = yaml.safe_load(f) or {}
+    
+    # --- FIX START: Normalize 'web' config if it's a boolean ---
+    # If config has "web: true" or "web: false", convert it to a dict
+    # so calls like cfg.get("web").get("key") don't crash.
+    web_val = cfg.get("web")
+    if web_val is not None and not isinstance(web_val, dict):
+        cfg["web"] = {"enable": bool(web_val)}
+    # --- FIX END ---
+
     cfg = deep_resolve_env(cfg)
     return cfg
 
@@ -139,11 +145,8 @@ def http_get_json(url: str, params: Dict[str, Any], timeout: int = 20) -> Dict[s
 
 def wiki_random_titles(rng: random.Random, n: int) -> List[str]:
     data = http_get_json(WIKI_API, {
-        "action": "query",
-        "format": "json",
-        "list": "random",
-        "rnnamespace": 0,
-        "rnlimit": n,
+        "action": "query", "format": "json", "list": "random",
+        "rnnamespace": 0, "rnlimit": n,
     })
     items = data.get("query", {}).get("random", []) or []
     titles = [it.get("title", "").strip() for it in items if it.get("title")]
@@ -153,16 +156,10 @@ def wiki_random_titles(rng: random.Random, n: int) -> List[str]:
 
 def wiki_extract(title: str, max_chars: int = 1200) -> str:
     data = http_get_json(WIKI_API, {
-        "action": "query",
-        "format": "json",
-        "prop": "extracts",
-        "exintro": 1,
-        "explaintext": 1,
-        "redirects": 1,
-        "titles": title,
+        "action": "query", "format": "json", "prop": "extracts",
+        "exintro": 1, "explaintext": 1, "redirects": 1, "titles": title,
     })
     pages = data.get("query", {}).get("pages", {}) or {}
-    # pages is dict keyed by pageid
     for _, p in pages.items():
         txt = (p.get("extract") or "").strip()
         if txt:
@@ -172,19 +169,10 @@ def wiki_extract(title: str, max_chars: int = 1200) -> str:
 
 
 def commons_image_search(query: str, limit: int = 10) -> List[Dict[str, Any]]:
-    """
-    Search Wikimedia Commons for images related to query.
-    Returns list of dicts with {title, url, mime}.
-    """
     data = http_get_json(COMMONS_API, {
-        "action": "query",
-        "format": "json",
-        "generator": "search",
-        "gsrsearch": f"{query} filetype:bitmap",
-        "gsrlimit": limit,
-        "gsrnamespace": 6,  # File:
-        "prop": "imageinfo",
-        "iiprop": "url|mime",
+        "action": "query", "format": "json", "generator": "search",
+        "gsrsearch": f"{query} filetype:bitmap", "gsrlimit": limit,
+        "gsrnamespace": 6, "prop": "imageinfo", "iiprop": "url|mime",
     })
     pages = data.get("query", {}).get("pages", {}) or {}
     out: List[Dict[str, Any]] = []
@@ -217,12 +205,8 @@ def choose_theme_key(rng: random.Random, spec: Dict[str, Any]) -> str:
     keys = [k for k in keys if isinstance(k, str) and k.strip()]
     if keys:
         return rng.choice(keys).strip()
-
-    # otherwise use Wikipedia random titles
     titles = wiki_random_titles(rng, 6)
-    if titles:
-        return titles[0]
-    return "Memory"
+    return titles[0] if titles else "Memory"
 
 
 def rot13(s: str) -> str:
@@ -246,25 +230,16 @@ def caesar(s: str, shift: int = 7) -> str:
 
 def encrypt_text(s: str, mode: str) -> str:
     mode = (mode or "none").lower()
-    if mode == "none":
-        return s
-    if mode == "rot13":
-        return rot13(s)
-    if mode == "base64":
-        return base64.b64encode(s.encode("utf-8")).decode("ascii")
-    if mode == "caesar":
-        return caesar(s, shift=7)
+    if mode == "none": return s
+    if mode == "rot13": return rot13(s)
+    if mode == "base64": return base64.b64encode(s.encode("utf-8")).decode("ascii")
+    if mode == "caesar": return caesar(s, shift=7)
     return s
 
 
 def safe_truncate(rng: random.Random, s: str, lo: int = 28, hi: int = 70) -> str:
-    """
-    Fixes your crash:
-      rng.randint(28, min(70, len(s))) fails when len(s) < 28.
-    """
     s = (s or "").strip()
-    if not s:
-        return ""
+    if not s: return ""
     n = len(s)
     upper = min(hi, n)
     if upper <= lo:
@@ -392,19 +367,17 @@ def timecode_overlay(arr: np.ndarray, frame_index: int, fps: int) -> np.ndarray:
     im = Image.fromarray(arr)
     d = ImageDraw.Draw(im)
     
-    # Improved font loading for better readability
+    # Try preferred font, else fallback
     font = None
     try:
         font = ImageFont.truetype("DejaVuSansMono.ttf", 16)
     except Exception:
-        # Fallbacks for other systems
-        for fallback in ["Arial", "Courier New", "LiberationMono-Regular", "FreeMono"]:
+        for fallback in ["Arial", "Courier New", "LiberationMono-Regular"]:
             try:
                 font = ImageFont.truetype(f"{fallback}.ttf", 16)
                 break
             except Exception:
                 pass
-    
     if font is None:
         font = ImageFont.load_default()
 
@@ -423,19 +396,13 @@ def slide_ui(w: int, h: int, title: str, body: str, theme: str, aesthetic: str) 
     layer = Image.new("RGBA", (w, h), (0, 0, 0, 0))
     d = ImageDraw.Draw(layer)
 
-    # Improved font loading
+    # Font handling
     fontT = fontB = fontM = None
-    
-    # Try preferred font
     try:
         fontT = ImageFont.truetype("DejaVuSans.ttf", 26)
         fontB = ImageFont.truetype("DejaVuSans.ttf", 18)
         fontM = ImageFont.truetype("DejaVuSansMono.ttf", 16)
     except Exception:
-        pass
-        
-    # Fallback fonts
-    if fontT is None:
         try:
             fontT = ImageFont.truetype("Arial.ttf", 26)
             fontB = ImageFont.truetype("Arial.ttf", 18)
@@ -443,14 +410,10 @@ def slide_ui(w: int, h: int, title: str, body: str, theme: str, aesthetic: str) 
         except Exception:
             fontT = fontB = fontM = ImageFont.load_default()
 
-    # header color per theme
     if aesthetic == "ppt90s":
-        if theme == "fatal":
-            hdr = (255, 40, 40, 235)
-        elif theme in ("protocol", "janedoe", "facefull"):
-            hdr = (255, 220, 40, 235)
-        else:
-            hdr = (60, 210, 255, 235)
+        if theme == "fatal": hdr = (255, 40, 40, 235)
+        elif theme in ("protocol", "janedoe", "facefull"): hdr = (255, 220, 40, 235)
+        else: hdr = (60, 210, 255, 235)
     else:
         hdr = (245, 245, 245, 235)
 
@@ -499,21 +462,16 @@ def apply_voice_fx(data: np.ndarray, sr: int, rng: random.Random, intensity: flo
     data = data.astype(np.float32)
     data /= (np.max(np.abs(data)) + 1e-6)
 
-    # intelligible saturation
     data = np.tanh(data * (1.6 + 0.4 * intensity)) * 0.70
 
-    # subtle ring modulation
     t = np.linspace(0, len(data) / sr, len(data), False).astype(np.float32)
     ring = np.sin(2 * np.pi * rng.choice([180, 220, 260]) * t).astype(np.float32)
     data = (0.85 * data + 0.15 * data * ring).astype(np.float32)
 
-    # bitcrush (light to medium)
     factor = rng.choice([3, 4, 5, 6]) if intensity > 0.6 else rng.choice([2, 3, 4])
     data = bitcrush(data, factor=factor)
 
-    # tape grit
     data += (rng.uniform(-1, 1) * 0.001) + (np.random.uniform(-1, 1, len(data)).astype(np.float32) * (0.004 + 0.004 * intensity))
-
     return data.astype(np.float32)
 
 
@@ -529,26 +487,19 @@ def mix_in(dst: np.ndarray, src: np.ndarray, start_s: float, sr: int, gain: floa
 # ----------------------------
 
 def build_story_slides(rng: random.Random, spec: Dict[str, Any], theme_key: str, scraped: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """
-    Build a list of slide dicts. Mix normal wellness slides with horror ones.
-    Uses safe_truncate() to avoid your randint crash.
-    """
     cfg_story = spec.get("story", {})
     slide_sec = float(spec.get("render", {}).get("slide_seconds", 3.0))
 
-    # extracted text paragraphs from the theme
     paragraphs = scraped.get("paragraphs", []) or []
     if not paragraphs:
         paragraphs = [f"{theme_key} is not stable. Do not describe it."]
 
-    # Normal slides to increase uncanny contrast
     normal_blocks = [
         ("WORKPLACE WELLNESS", "• Hydrate every hour\n• Breathe in for 4, out for 6\n• Check posture\n• Smile (optional)"),
         ("HAPPINESS HABITS", "• Short walk after lunch\n• Call a friend\n• Keep a simple journal\n• Sleep at the same time"),
         ("PRODUCTIVITY TIP", "• One task at a time\n• Reduce distractions\n• Label objects\n• Keep desk tidy"),
     ]
 
-    # Horror beats
     horror_blocks = [
         ("MEMORY RETENTION", "If you notice a face that feels wrong:\n1) Look away\n2) Do not describe it\n3) Touch an object you can name\n4) Leave immediately"),
         ("IDENTIFICATION FAILURE", "SUBJECT: JANE DOE\nSTATUS: [REDACTED]\nDO NOT ATTEMPT RECOGNITION"),
@@ -556,7 +507,6 @@ def build_story_slides(rng: random.Random, spec: Dict[str, Any], theme_key: str,
         ("JANE DOE INTERMISSION", "LAST STABLE MEMORY: 03:17\nWITNESS COUNT: 1\nCOMPLIANCE: PARTIAL"),
     ]
 
-    # Build narrative text snippets from scraped paragraphs
     snippets: List[str] = []
     for p in paragraphs[:8]:
         s = re.sub(r"\s+", " ", p).strip()
@@ -564,7 +514,6 @@ def build_story_slides(rng: random.Random, spec: Dict[str, Any], theme_key: str,
         if s:
             snippets.append(s)
 
-    # optional encryption/easter egg
     encrypt_mode = (spec.get("control", {}).get("encrypt", {}).get("mode") or "none").lower()
     targets = spec.get("control", {}).get("encrypt", {}).get("targets") or ["theme", "easter"]
     targets = set([t.lower().strip() for t in targets if isinstance(t, str)])
@@ -573,7 +522,6 @@ def build_story_slides(rng: random.Random, spec: Dict[str, Any], theme_key: str,
     if "easter" in targets:
         easter = encrypt_text(easter, encrypt_mode)
 
-    # Compose slide list
     slides: List[Dict[str, Any]] = []
 
     slides.append({
@@ -584,7 +532,6 @@ def build_story_slides(rng: random.Random, spec: Dict[str, Any], theme_key: str,
         "dur": max(2.0, slide_sec * 0.7),
     })
 
-    # Alternate normal / horror while injecting theme snippets
     for i in range(cfg_story.get("length", 10)):
         if i % 3 == 1:
             title, body = rng.choice(horror_blocks)
@@ -595,7 +542,6 @@ def build_story_slides(rng: random.Random, spec: Dict[str, Any], theme_key: str,
                            "dur": slide_sec})
         else:
             title, body = rng.choice(normal_blocks)
-            # lace with a subtle wrong line from snippets
             if snippets and rng.random() < 0.65:
                 body = body + "\n\n" + rng.choice(snippets)
             slides.append({"kind": "normal",
@@ -604,7 +550,6 @@ def build_story_slides(rng: random.Random, spec: Dict[str, Any], theme_key: str,
                            "bg": rng.choice(["scene", "object"]),
                            "dur": slide_sec})
 
-        # occasional explicit “theme slide”
         if rng.random() < 0.25 and snippets:
             slides.append({
                 "kind": "normal",
@@ -642,13 +587,6 @@ def list_local_images(folder: Path) -> List[Path]:
 
 
 def build_image_pool(rng: random.Random, spec: Dict[str, Any], theme_key: str, workdir: Path) -> Dict[str, List[Path]]:
-    """
-    Returns paths grouped as:
-      faces: [...], objects: [...], scenes: [...]
-    Uses:
-      - local repo images
-      - Wikimedia downloads for the chosen theme
-    """
     assets_cfg = spec.get("assets", {})
     local_dir = Path(assets_cfg.get("local_dir", "assets/local"))
     local_dir = (workdir / local_dir).resolve()
@@ -656,12 +594,10 @@ def build_image_pool(rng: random.Random, spec: Dict[str, Any], theme_key: str, w
     faces_local = list_local_images(local_dir / "faces")
     objects_local = list_local_images(local_dir / "objects")
     scenes_local = list_local_images(local_dir / "scenes")
-
-    # optionally also use mixed folder
     mixed_local = list_local_images(local_dir / "mixed")
 
-    # Download some web images (Commons) into a cache folder
     web_cfg = spec.get("web", {})
+    # Using 'web: true' fix logic from load_yaml, web_cfg is definitely a dict now
     enable_web = bool(web_cfg.get("enable", True))
     web_limit = int(web_cfg.get("image_limit", 10))
     cache_dir = workdir / (assets_cfg.get("cache_dir", "assets/cache"))
@@ -672,7 +608,6 @@ def build_image_pool(rng: random.Random, spec: Dict[str, Any], theme_key: str, w
     scenes_web: List[Path] = []
 
     if enable_web:
-        # Search different “angles” for variety
         queries = [
             theme_key,
             f"{theme_key} portrait",
@@ -686,13 +621,11 @@ def build_image_pool(rng: random.Random, spec: Dict[str, Any], theme_key: str, w
 
         downloaded = 0
         for q in queries:
-            if downloaded >= web_limit:
-                break
+            if downloaded >= web_limit: break
             results = commons_image_search(q, limit=8)
             rng.shuffle(results)
             for item in results[:4]:
-                if downloaded >= web_limit:
-                    break
+                if downloaded >= web_limit: break
                 url = item["url"]
                 fn = re.sub(r"[^a-zA-Z0-9_-]+", "_", item["title"])[:80]
                 outp = cache_dir / f"{fn}_{downloaded}.jpg"
@@ -702,7 +635,6 @@ def build_image_pool(rng: random.Random, spec: Dict[str, Any], theme_key: str, w
                 ok = download_image(url, outp)
                 if ok and outp.stat().st_size > 10_000:
                     downloaded += 1
-                    # crude classification by query keyword
                     qq = q.lower()
                     if "portrait" in qq or "passport" in qq or "face" in qq:
                         faces_web.append(outp)
@@ -711,19 +643,14 @@ def build_image_pool(rng: random.Random, spec: Dict[str, Any], theme_key: str, w
                     else:
                         scenes_web.append(outp)
 
-    # Merge pools, fallback to mixed if empty
     faces = faces_local + faces_web
     objects = objects_local + objects_web
     scenes = scenes_local + scenes_web
 
-    if not faces:
-        faces = mixed_local[:]
-    if not objects:
-        objects = mixed_local[:]
-    if not scenes:
-        scenes = mixed_local[:]
+    if not faces: faces = mixed_local[:]
+    if not objects: objects = mixed_local[:]
+    if not scenes: scenes = mixed_local[:]
 
-    # final safety
     if not any([faces, objects, scenes]):
         raise RuntimeError("No images found. Add images to assets/local/ or enable web scraping.")
 
@@ -736,15 +663,12 @@ def build_image_pool(rng: random.Random, spec: Dict[str, Any], theme_key: str, w
 
 def scrape_theme_text(rng: random.Random, theme_key: str, max_paragraphs: int = 10) -> Dict[str, Any]:
     titles = [theme_key]
-    # Also enrich with a couple random titles for uncanny “unrelated objects”
     titles += wiki_random_titles(rng, 3)
 
     paragraphs: List[str] = []
     for t in titles:
         ext = wiki_extract(t, max_chars=1600)
-        if not ext:
-            continue
-        # split into sentence-ish chunks
+        if not ext: continue
         parts = re.split(r"(?<=[.!?])\s+", ext)
         for p in parts:
             p = p.strip()
@@ -779,7 +703,6 @@ def stamp_popup(frame: np.ndarray, popup: np.ndarray) -> np.ndarray:
     y = random.randint(70, max(71, h - ph - 70))
     out = frame.copy()
     out[y:y + ph, x:x + pw] = popup
-    # black border
     out[y:y + 3, x:x + pw] = 0
     out[y + ph - 3:y + ph, x:x + pw] = 0
     out[y:y + ph, x:x + 3] = 0
@@ -789,7 +712,6 @@ def stamp_popup(frame: np.ndarray, popup: np.ndarray) -> np.ndarray:
 
 def make_popup_from_image(im: Image.Image, w: int, h: int, rng: random.Random) -> np.ndarray:
     arr = np.array(cover_resize(im, w, h), dtype=np.uint8)
-    # crop
     x0 = rng.randint(0, max(1, w - 220))
     y0 = rng.randint(0, max(1, h - 220))
     crop = arr[y0:y0 + 200, x0:x0 + 200]
@@ -835,7 +757,6 @@ def render_video_and_audio(
     face_level = float(control_cfg.get("effects", {}).get("face_uncanny", 0.9))
     enable_web = bool(spec.get("web", {}).get("enable", True))
 
-    # pick backgrounds for slide types
     def pick_bg(kind: str) -> Image.Image:
         if kind in ("janedoe", "facefull"):
             p = rng.choice(pools["faces"])
@@ -854,7 +775,6 @@ def render_video_and_audio(
     audio_wav = workdir / "render_audio.wav"
     final_mp4 = out_path
 
-    # popups pool (uncorrelated objects + faces)
     popup_sources: List[Image.Image] = []
     for p in (pools["faces"][:3] + pools["objects"][:4] + pools["scenes"][:3]):
         try:
@@ -866,7 +786,6 @@ def render_video_and_audio(
 
     popup_pool = [make_popup_from_image(im, rs.width, rs.height, rng) for im in popup_sources]
 
-    # schedule up to popup_max “jump” popups lasting popup_seconds
     total_duration = float(sum(s.get("dur", rs.slide_seconds) for s in slides))
     total_frames = int(total_duration * rs.fps)
     popup_events: List[int] = []
@@ -876,13 +795,10 @@ def render_video_and_audio(
         popup_events = sorted(set(popup_events))[:rs.popup_max]
     popup_len_frames = max(1, int(rs.popup_seconds * rs.fps))
 
-    # optional: “flash frames” separate from popups
     flash_frames: set[int] = set()
     for _ in range(10):
         flash_frames.add(rng.randint(int(0.10 * total_frames), total_frames - 2))
 
-    # RENDER VIDEO
-    import imageio.v2 as imageio  # local import to keep startup minimal
     writer = imageio.get_writer(str(silent_video), fps=rs.fps, codec="libx264", bitrate="2400k")
 
     frame_idx = 0
@@ -899,21 +815,16 @@ def render_video_and_audio(
         title = s["title"]
         body = s["body"]
 
-        # choose theme for UI
         theme = "normal"
-        if kind in ("protocol", "facefull"):
-            theme = "protocol"
-        elif kind == "fatal":
-            theme = "fatal"
-        elif kind == "janedoe":
-            theme = "janedoe"
+        if kind in ("protocol", "facefull"): theme = "protocol"
+        elif kind == "fatal": theme = "fatal"
+        elif kind == "janedoe": theme = "janedoe"
 
         ui = slide_ui(rs.width, rs.height, title, body, theme=theme, aesthetic=aesthetic)
 
         for fi in range(nF):
             t = frame_idx / rs.fps
 
-            # background base
             if kind == "bars":
                 frame = color_bars(rs.width, rs.height)
             elif kind == "fatal":
@@ -924,57 +835,43 @@ def render_video_and_audio(
                 bg = cover_resize(pick_bg(kind), rs.width, rs.height)
                 frame = np.array(bg, dtype=np.uint8)
 
-            # drift
             if fi % 4 == 0:
                 frame = np.roll(frame, rng.randint(-2, 2), axis=1)
 
-            # Fullscreen uncanny face overlays on certain kinds
             if kind in ("janedoe", "facefull") and pools["faces"]:
                 face_im = cover_resize(Image.open(rng.choice(pools["faces"])).convert("RGB"), rs.width, rs.height)
                 face_arr = np.array(face_im, dtype=np.uint8)
                 face_arr = wave_warp_face(face_arr, t)
-                # boost uncanny saturation slightly
                 if face_level > 0.6:
                     face_arr = chroma_bleed(face_arr, amt=5)
                 alpha = 0.78 if kind == "janedoe" else 0.65
                 frame = np.clip(frame.astype(np.float32) * (1 - alpha) + face_arr.astype(np.float32) * alpha, 0, 255).astype(np.uint8)
-
                 if rng.random() < 0.55 * redact_level:
                     frame = redactions(frame, count=2 if kind == "facefull" else 3)
 
-            # UI overlay
             frame = alpha_over(frame, ui)
 
-            # popup events (max 3, ~0.5s) — “distorted images that pop up randomly”
             for ev in popup_events:
                 if ev <= frame_idx < ev + popup_len_frames:
                     pop = rng.choice(popup_pool)
-                    if rng.random() < 0.35:
-                        pop = 255 - pop
+                    if rng.random() < 0.35: pop = 255 - pop
                     frame = stamp_popup(frame, pop)
 
-            # one-frame flash stingers
             if frame_idx in flash_frames and rng.random() < 0.85:
                 flash_src = np.array(cover_resize(pick_bg(rng.choice(["normal", "protocol", "facefull"])), rs.width, rs.height), dtype=np.uint8)
                 flash_src = hslice_glitch(chroma_bleed(noise(flash_src, 35), 5), bands=5, maxshift=75)
                 frame = flash_src
 
-            # VHS stack
             frame = chroma_bleed(frame, amt=3 if rng.random() < 0.8 else 5)
-            if rng.random() < 0.35 * glitch_level:
-                frame = tracking_line(frame)
-            if rng.random() < 0.22 * glitch_level:
-                frame = hslice_glitch(frame, bands=3, maxshift=62)
-
+            if rng.random() < 0.35 * glitch_level: frame = tracking_line(frame)
+            if rng.random() < 0.22 * glitch_level: frame = hslice_glitch(frame, bands=3, maxshift=62)
             frame = noise(frame, level=18)
             frame = (frame.astype(np.float32) * scan).astype(np.uint8)
             frame = (frame.astype(np.float32) * vignette).astype(np.uint8)
 
-            # edge transitions
             if fi < 3 or fi > nF - 4:
                 frame = hslice_glitch(frame, bands=4, maxshift=75)
-                if rng.random() < 0.45:
-                    frame = 255 - frame
+                if rng.random() < 0.45: frame = 255 - frame
 
             frame = timecode_overlay(frame, frame_idx, rs.fps)
             writer.append_data(frame)
@@ -982,17 +879,15 @@ def render_video_and_audio(
 
     writer.close()
 
-    # RENDER AUDIO
     dur_sec = frame_idx / rs.fps
     total_samples = int(dur_sec * rs.sr)
     t = np.linspace(0, dur_sec, total_samples, False).astype(np.float32)
 
-    audio = (np.random.uniform(-1, 1, total_samples).astype(np.float32) * 0.06)  # hiss
-    audio += 0.03 * np.sin(2 * np.pi * 55 * t) + 0.018 * np.sin(2 * np.pi * 110 * t)  # mains-ish
-    audio += 0.02 * np.sin(2 * np.pi * 30 * t)  # low drone
-    audio *= (0.82 + 0.18 * np.sin(2 * np.pi * 0.18 * t)).astype(np.float32)  # wobble
+    audio = (np.random.uniform(-1, 1, total_samples).astype(np.float32) * 0.06)
+    audio += 0.03 * np.sin(2 * np.pi * 55 * t) + 0.018 * np.sin(2 * np.pi * 110 * t)
+    audio += 0.02 * np.sin(2 * np.pi * 30 * t)
+    audio *= (0.82 + 0.18 * np.sin(2 * np.pi * 0.18 * t)).astype(np.float32)
 
-    # abrupt stabs (noise pops)
     stab_count = int(spec.get("audio", {}).get("stabs", 18))
     for _ in range(stab_count):
         p0 = rng.randint(0, max(1, total_samples - 2))
@@ -1001,7 +896,6 @@ def render_video_and_audio(
         burst = (np.random.uniform(-1, 1, p1 - p0).astype(np.float32) * rng.uniform(0.25, 0.55))
         audio[p0:p1] += burst
 
-    # beeps around fatal-like beats
     for sec in [12, 20, 26]:
         p0 = int(sec * rs.sr)
         if p0 < total_samples:
@@ -1009,7 +903,6 @@ def render_video_and_audio(
             tt = np.linspace(0, (p1 - p0) / rs.sr, p1 - p0, False).astype(np.float32)
             audio[p0:p1] += 0.22 * np.sin(2 * np.pi * 880 * tt).astype(np.float32)
 
-    # TTS
     voice_cfg = spec.get("tts", {})
     enable_tts = bool(voice_cfg.get("enable", True))
     voice_profiles = voice_cfg.get("profiles") or []
@@ -1039,39 +932,29 @@ def render_video_and_audio(
                 amp=int(prof.get("amp", 170)),
             )
             sr2, data = wav_read(str(wav_path))
-            if data.ndim > 1:
-                data = data.mean(axis=1)
+            if data.ndim > 1: data = data.mean(axis=1)
             data = data.astype(np.float32)
             if sr2 != rs.sr:
-                # linear resample (good enough for TTS)
                 x = np.linspace(0, 1, len(data), False)
                 x2 = np.linspace(0, 1, int(len(data) * rs.sr / sr2), False)
                 data = np.interp(x2, x, data).astype(np.float32)
 
             data = apply_voice_fx(data, rs.sr, rng, intensity=fx_intensity)
-
             start_s = slide_starts[min(i, len(slide_starts) - 1)] + 0.25
             mix_in(audio, data, start_s=start_s, sr=rs.sr, gain=0.95)
 
-    # normalize
     audio /= (np.max(np.abs(audio)) + 1e-6)
     wav_write(str(audio_wav), rs.sr, (audio * 32767).astype(np.int16))
 
-    # mux
     run_ffmpeg_mux(silent_video, audio_wav, final_mp4)
     return final_mp4
 
 
 def build_narrations_for_slides(rng: random.Random, theme_key: str, slides: List[Dict[str, Any]], spec: Dict[str, Any]) -> List[str]:
-    """
-    Generates “normal -> wrong” narration.
-    Also supports hidden encrypted inserts.
-    """
     encrypt_mode = (spec.get("control", {}).get("encrypt", {}).get("mode") or "none").lower()
     targets = spec.get("control", {}).get("encrypt", {}).get("targets") or ["easter"]
     targets = set([t.lower().strip() for t in targets if isinstance(t, str)])
 
-    # Some recurring lines for cohesion
     hooks = [
         "Please follow along.",
         "If you feel anxious, breathe slowly.",
@@ -1089,7 +972,6 @@ def build_narrations_for_slides(rng: random.Random, theme_key: str, slides: List
         if kind == "bars":
             line = f"Playback. Job training tape. Theme key: {theme_key}. {rng.choice(hooks)}"
         elif kind == "normal":
-            # mostly normal, but with one wrong sentence
             wrong = rng.choice([
                 "If the journal writes back, stop.",
                 "If you recognize the face, look away.",
@@ -1105,7 +987,6 @@ def build_narrations_for_slides(rng: random.Random, theme_key: str, slides: List
         else:
             line = f"{title}. {body.replace(chr(10), ' ')}."
 
-        # occasional encrypted easter egg spoken softly (still “weird”)
         if kind in ("janedoe", "fatal") and rng.random() < 0.55 and "easter" in targets:
             secret = f"{theme_key}::{rng.randint(1000,9999)}::{rng.choice(['DO NOT RECALL','LOOK AWAY','DO NOT NAME IT'])}"
             secret = encrypt_text(secret, encrypt_mode)
@@ -1120,20 +1001,16 @@ def build_narrations_for_slides(rng: random.Random, theme_key: str, slides: List
 # ----------------------------
 
 def main() -> None:
-    # Ensure critical tools are present before starting
     check_system_deps()
-
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default="config.yaml")
     ap.add_argument("--out", default="out.mp4")
-    ap.add_argument("--seed", default=None, help="Override seed (int). If omitted, uses config/env/auto.")
+    ap.add_argument("--seed", default=None, help="Override seed (int).")
     ap.add_argument("--theme", default=None, help="Override theme key")
     args = ap.parse_args()
 
     cfg = load_yaml(args.config)
 
-    # Seed resolution order:
-    # CLI --seed > cfg.seed > auto
     cfg_seed_raw = cfg.get("seed", "auto")
     if args.seed is not None:
         seed = parse_int_safe(args.seed, default=now_seed())
@@ -1142,19 +1019,20 @@ def main() -> None:
 
     rng = random.Random(seed)
 
-    # theme key
     theme_key = (args.theme or cfg.get("brain", {}).get("theme") or "").strip()
     if not theme_key:
         theme_key = choose_theme_key(rng, cfg)
 
-    # Workdir
     workdir = Path(cfg.get("workdir", ".work")).resolve()
     workdir.mkdir(parents=True, exist_ok=True)
 
-    # Scrape text + images
-    scraped = scrape_theme_text(rng, theme_key, max_paragraphs=int(cfg.get("web", {}).get("text_paragraphs", 10)))
-    
-    # FIX: Pass the resolved workdir instead of Path(".") to ensure cache uses configured workspace
+    web_section = cfg.get("web")
+    if isinstance(web_section, dict):
+        text_para = int(web_section.get("text_paragraphs", 10))
+    else:
+        text_para = 10
+
+    scraped = scrape_theme_text(rng, theme_key, max_paragraphs=text_para)
     pools = build_image_pool(rng, cfg, theme_key, workdir=workdir)
 
     slides = build_story_slides(rng, cfg, theme_key, scraped)
