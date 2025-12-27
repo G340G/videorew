@@ -24,11 +24,15 @@ inject_words:
   - "anchor"
   - "compliance"
   - "jane doe"
+  - "blue ocean strategy"
+  - "agile VS waterfall approach"
 
 # Words to encrypt as easter eggs
 encrypt_words:
   - "remember"
   - "do not describe"
+  - "praise saturn"
+
 encrypt_shift: 9
 
 toggles:
