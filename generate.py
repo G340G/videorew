@@ -22,15 +22,13 @@ from __future__ import annotations
 
 import argparse
 import base64
-import datetime as dt
-import io
 import math
 import os
 import random
 import re
+import shutil
 import subprocess
 import sys
-import textwrap
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -39,7 +37,8 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import requests
 import yaml
-from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageFont, ImageOps
+import imageio.v2 as imageio  # Moved to top level for early error detection
+from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps
 from scipy.io.wavfile import read as wav_read
 from scipy.io.wavfile import write as wav_write
 
@@ -49,6 +48,16 @@ from scipy.io.wavfile import write as wav_write
 # ----------------------------
 
 ENV_VAR_PATTERN = re.compile(r"^\$\{([A-Z0-9_]+)\}$")
+
+
+def check_system_deps() -> None:
+    """Ensure required external binaries are present."""
+    required = ["ffmpeg", "espeak"]
+    missing = [tool for tool in required if shutil.which(tool) is None]
+    if missing:
+        print(f"ERROR: Missing system dependencies: {', '.join(missing)}")
+        print("Please install them (e.g., 'apt-get install ffmpeg espeak' or 'brew install ffmpeg espeak').")
+        sys.exit(1)
 
 
 def resolve_env_value(v: Any) -> Any:
@@ -102,6 +111,8 @@ def now_seed() -> int:
 
 
 def load_yaml(path: str) -> Dict[str, Any]:
+    if not os.path.exists(path):
+        return {}
     with open(path, "r", encoding="utf-8") as f:
         cfg = yaml.safe_load(f) or {}
     cfg = deep_resolve_env(cfg)
@@ -117,9 +128,13 @@ COMMONS_API = "https://commons.wikimedia.org/w/api.php"
 
 
 def http_get_json(url: str, params: Dict[str, Any], timeout: int = 20) -> Dict[str, Any]:
-    r = requests.get(url, params=params, timeout=timeout, headers={"User-Agent": "pptex-github-action/1.0"})
-    r.raise_for_status()
-    return r.json()
+    try:
+        r = requests.get(url, params=params, timeout=timeout, headers={"User-Agent": "pptex-github-action/1.0"})
+        r.raise_for_status()
+        return r.json()
+    except Exception as e:
+        print(f"WARN: API Request failed: {e}")
+        return {}
 
 
 def wiki_random_titles(rng: random.Random, n: int) -> List[str]:
@@ -246,10 +261,6 @@ def safe_truncate(rng: random.Random, s: str, lo: int = 28, hi: int = 70) -> str
     """
     Fixes your crash:
       rng.randint(28, min(70, len(s))) fails when len(s) < 28.
-
-    This version:
-    - If len(s) <= lo, returns s unchanged (or small slice)
-    - Else chooses a safe random end between lo..min(hi, len(s))
     """
     s = (s or "").strip()
     if not s:
@@ -257,7 +268,6 @@ def safe_truncate(rng: random.Random, s: str, lo: int = 28, hi: int = 70) -> str
     n = len(s)
     upper = min(hi, n)
     if upper <= lo:
-        # too short; keep as-is (or minimal)
         return s[:upper]
     end = rng.randint(lo, upper)
     return s[:end]
@@ -281,17 +291,18 @@ class RenderSpec:
 def cover_resize(im: Image.Image, w: int, h: int) -> Image.Image:
     iw, ih = im.size
     s = max(w / iw, h / ih)
-    nw, nh = int(iw * s), int(ih:=(ih * s))
-    im2 = im.resize((nw, int(nh)), Image.Resampling.BILINEAR)
+    nw = int(iw * s)
+    nh = int(ih * s)
+    im2 = im.resize((nw, nh), Image.Resampling.BILINEAR)
     x0 = (nw - w) // 2
-    y0 = (int(nh) - h) // 2
+    y0 = (nh - h) // 2
     return im2.crop((x0, y0, x0 + w, y0 + h)).convert("RGB")
 
 
 def make_vignette_mask(w: int, h: int) -> np.ndarray:
     yy, xx = np.mgrid[0:h, 0:w]
     cx, cy = w / 2, h / 2
-    r = np.sqrt((xx - cx) ** 2 + (yy - cy) ** 2) / np.sqrt(cx**2 + cy**2)
+    r = np.sqrt((xx - cx) ** 2 + (yy - cy) ** 2) / (np.sqrt(cx**2 + cy**2) + 1e-6)
     v = np.clip(1 - 0.65 * (r ** 1.7), 0.28, 1.0).astype(np.float32)
     return v[..., None]
 
@@ -380,10 +391,23 @@ def timecode_overlay(arr: np.ndarray, frame_index: int, fps: int) -> np.ndarray:
     h, w = arr.shape[:2]
     im = Image.fromarray(arr)
     d = ImageDraw.Draw(im)
+    
+    # Improved font loading for better readability
+    font = None
     try:
         font = ImageFont.truetype("DejaVuSansMono.ttf", 16)
     except Exception:
+        # Fallbacks for other systems
+        for fallback in ["Arial", "Courier New", "LiberationMono-Regular", "FreeMono"]:
+            try:
+                font = ImageFont.truetype(f"{fallback}.ttf", 16)
+                break
+            except Exception:
+                pass
+    
+    if font is None:
         font = ImageFont.load_default()
+
     secs = frame_index / fps
     hh = int(secs // 3600)
     mm = int((secs % 3600) // 60)
@@ -396,19 +420,28 @@ def timecode_overlay(arr: np.ndarray, frame_index: int, fps: int) -> np.ndarray:
 
 
 def slide_ui(w: int, h: int, title: str, body: str, theme: str, aesthetic: str) -> np.ndarray:
-    """
-    90s PPT aesthetic (bright header/panels) + VHS footer.
-    theme: normal/protocol/janedoe/fatal
-    """
     layer = Image.new("RGBA", (w, h), (0, 0, 0, 0))
     d = ImageDraw.Draw(layer)
 
+    # Improved font loading
+    fontT = fontB = fontM = None
+    
+    # Try preferred font
     try:
         fontT = ImageFont.truetype("DejaVuSans.ttf", 26)
         fontB = ImageFont.truetype("DejaVuSans.ttf", 18)
         fontM = ImageFont.truetype("DejaVuSansMono.ttf", 16)
     except Exception:
-        fontT = fontB = fontM = ImageFont.load_default()
+        pass
+        
+    # Fallback fonts
+    if fontT is None:
+        try:
+            fontT = ImageFont.truetype("Arial.ttf", 26)
+            fontB = ImageFont.truetype("Arial.ttf", 18)
+            fontM = ImageFont.truetype("Courier New.ttf", 16)
+        except Exception:
+            fontT = fontB = fontM = ImageFont.load_default()
 
     # header color per theme
     if aesthetic == "ppt90s":
@@ -1087,6 +1120,9 @@ def build_narrations_for_slides(rng: random.Random, theme_key: str, slides: List
 # ----------------------------
 
 def main() -> None:
+    # Ensure critical tools are present before starting
+    check_system_deps()
+
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default="config.yaml")
     ap.add_argument("--out", default="out.mp4")
@@ -1117,7 +1153,9 @@ def main() -> None:
 
     # Scrape text + images
     scraped = scrape_theme_text(rng, theme_key, max_paragraphs=int(cfg.get("web", {}).get("text_paragraphs", 10)))
-    pools = build_image_pool(rng, cfg, theme_key, workdir=Path("."))
+    
+    # FIX: Pass the resolved workdir instead of Path(".") to ensure cache uses configured workspace
+    pools = build_image_pool(rng, cfg, theme_key, workdir=workdir)
 
     slides = build_story_slides(rng, cfg, theme_key, scraped)
 
